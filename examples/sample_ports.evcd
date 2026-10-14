@@ -1,0 +1,44 @@
+$date
+   Wed Oct 14 12:45:00 2026
+$end
+$version
+   IEEE Std 1364-2001 Extended VCD Dump ($dumpports)
+$end
+$timescale
+   1ns
+$end
+$scope module port_tb $end
+$var port 1 ! clk $end
+$var port 1 " req_in $end
+$var port 1 # ack_out $end
+$var port 4 $ data_io [3:0] $end
+$upscope $end
+$enddefinitions $end
+#0
+pD 0 0 !
+pD 0 0 "
+pL 0 0 #
+pZZZZ 0 0 $
+#10
+pU 0 0 !
+#20
+pD 0 0 !
+pU 0 0 "
+pDDUD 0 0 $
+#30
+pU 0 0 !
+pH 0 0 #
+pLLHL 0 0 $
+#40
+pD 0 0 !
+#50
+pU 0 0 !
+pD 0 0 "
+#60
+pD 0 0 !
+pL 0 0 #
+pZZZZ 0 0 $
+#70
+pU 0 0 !
+#80
+pD 0 0 !

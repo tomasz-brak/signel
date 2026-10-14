@@ -1,0 +1,11 @@
+[package]
+name = "signel"
+version = "0.1.0"
+entrypoint = "lib.typ"
+authors = ["Tomasz"]
+license = "MIT"
+description = "Embed IEEE Std 1364-2001 VCD & EVCD digital waveforms into Typst documents with rich custom styling."
+repository = "https://github.com/tomasz/signel"
+keywords = ["vcd", "evcd", "waveform", "timing", "verilog", "eda", "hardware"]
+compiler = "0.11.0"
+exclude = ["examples/*", "docs/*", ".git*"]
