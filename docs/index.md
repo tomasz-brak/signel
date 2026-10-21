@@ -26,7 +26,7 @@
 ## Quick Example
 
 ```typst
-#import "@local/signel:0.1.0": render-vcd, themes
+#import "@local/signel:0.1.1": render-vcd, themes
 
 #render-vcd(
   read("sim.vcd"),

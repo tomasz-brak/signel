@@ -21,7 +21,7 @@ This guide covers all styling options available in `signel`, from pre-built colo
 ### Applying a Theme
 
 ```typst
-#import "@local/signel:0.1.0": render-vcd, themes
+#import "@local/signel:0.1.1": render-vcd, themes
 
 #render-vcd(
   read("sim.vcd"),
@@ -36,7 +36,7 @@ This guide covers all styling options available in `signel`, from pre-built colo
 Use the `vcd-theme` helper to override specific theme properties while inheriting defaults:
 
 ```typst
-#import "@local/signel:0.1.0": render-vcd, themes, vcd-theme
+#import "@local/signel:0.1.1": render-vcd, themes, vcd-theme
 
 #let custom-theme = vcd-theme(
   base: themes.default,

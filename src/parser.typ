@@ -160,6 +160,9 @@
             raw-name == "ck"
           ) and (bit-size == 1)
 
+          let msb = if parsed-name.has-range { parsed-name.msb } else { bit-size - 1 }
+          let lsb = if parsed-name.has-range { parsed-name.lsb } else { 0 }
+
           let sig-info = (
             id: id,
             name: raw-name,
@@ -168,6 +171,8 @@
             scopes: scopes,
             type: var-type,
             size: bit-size,
+            msb: msb,
+            lsb: lsb,
             is-bus: is-bus,
             is-clock: is-clock,
             is-port: (var-type == "port"),

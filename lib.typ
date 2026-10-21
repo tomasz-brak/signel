@@ -2,9 +2,18 @@
 // IEEE Std 1364-2001 VCD & EVCD Waveform Embedding for Typst
 
 #import "src/parser.typ": parse-vcd, decode-evcd-char, decode-evcd-value
-#import "src/renderer.typ": render-waveform
+#import "src/renderer.typ": render-waveform, resolve-signal, find-signal
 #import "src/themes.typ": themes, vcd-theme, theme-default, theme-dark, theme-academic, theme-nord, theme-dracula, theme-emerald, theme-amber
-#import "src/util.typ": bin-to-hex, bin-to-dec, bin-to-ascii, format-bus-val, parse-timescale, format-time, parse-signal-name
+#import "src/util.typ": bin-to-hex, bin-to-dec, bin-to-ascii, bin-to-oct, bin-to-signed, decode-one-hot, gray-to-bin, decode-7segment, interpret-bus-val, format-bus-val, parse-timescale, format-time, parse-signal-name, normalize-signal-name, get-bit-at-index, get-slice-range
+
+#let interpreters = (
+  seven-segment: decode-7segment,
+  "7seg": decode-7segment,
+  signed: bin-to-signed,
+  one-hot: decode-one-hot,
+  octal: bin-to-oct,
+  gray: gray-to-bin,
+)
 
 /// Render a VCD/EVCD directly from a string with custom options.
 #let render-vcd(
@@ -28,6 +37,8 @@
   title: none,
   evcd-mode: "composite",
   time-unit: auto,
+  strict: false,
+  show-warnings: true,
 ) = {
   if not (content.contains("$") or content.contains("#")) {
     panic("render-vcd expects VCD content string. In Typst, packages cannot read files from your document directory. Please wrap your file path with read(): #render-vcd(read(\"" + content + "\"))")
@@ -54,6 +65,8 @@
     title: title,
     evcd-mode: evcd-mode,
     time-unit: time-unit,
+    strict: strict,
+    show-warnings: show-warnings,
   )
 }
 

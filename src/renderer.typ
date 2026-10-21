@@ -1,28 +1,184 @@
 // src/renderer.typ
 // Waveform rendering engine for signel
 
-#import "util.typ": format-bus-val, format-time, parse-signal-name, convert-time, format-time-val
+#import "util.typ": format-bus-val, interpret-bus-val, format-time, parse-signal-name, normalize-signal-name, get-bit-at-index, get-slice-range, convert-time, format-time-val
 #import "themes.typ": theme-default, themes
 #import "parser.typ": decode-evcd-char, decode-evcd-value
 
-/// Find the signal object from parsed data by exact or suffix/base match
+/// Find a matching signal in parsed data or slice a bit/range from a parent signal.
+/// Returns (signal: sig-or-none, warning: warning-or-none)
+#let resolve-signal(parsed, query) = {
+  if query == none or query == "" {
+    return (signal: none, warning: "Empty signal query")
+  }
+
+  let q-str = str(query).trim()
+  let q-norm = normalize-signal-name(q-str)
+
+  // 1. Direct match check
+  if q-str in parsed.signals {
+    return (signal: parsed.signals.at(q-str), warning: none)
+  }
+
+  for (name, sig) in parsed.signals {
+    let s-full-norm = normalize-signal-name(sig.full-name)
+    let s-name-norm = normalize-signal-name(sig.name)
+    if s-full-norm == q-norm or s-name-norm == q-norm or sig.name == q-str or sig.full-name == q-str {
+      return (signal: sig, warning: none)
+    }
+  }
+
+  // 2. Check if query is asking for a bit slice: base[idx] or range: base[hi:lo]
+  let m-range = q-norm.match(regex("^(.*?)\\[([0-9]+):([0-9]+)\\]$"))
+  let m-bit = q-norm.match(regex("^(.*?)\\[([0-9]+)\\]$"))
+
+  if m-range != none or m-bit != none {
+    let target-base = if m-range != none { m-range.captures.at(0) } else { m-bit.captures.at(0) }
+    let target-base-norm = normalize-signal-name(target-base)
+
+    // Find parent signal matching target-base
+    let parent = none
+
+    for (name, sig) in parsed.signals {
+      let s-base-norm = normalize-signal-name(sig.base-name)
+      let s-name-norm = normalize-signal-name(sig.name)
+      let s-full-norm = normalize-signal-name(sig.full-name)
+
+      if s-full-norm == target-base-norm or s-name-norm == target-base-norm or s-base-norm == target-base-norm or sig.base-name == target-base {
+        parent = sig
+        break
+      }
+      if s-full-norm.ends-with("." + target-base-norm) or sig.full-name.ends-with("." + target-base) {
+        parent = sig
+        break
+      }
+    }
+
+    if parent == none {
+      let avail = parsed.all-signals.map(s => parse-signal-name(s).base).dedup().join(", ")
+      return (
+        signal: none,
+        warning: "Signal '" + q-str + "' not found (parent '" + target-base + "' not in: " + avail + ")"
+      )
+    }
+
+    let p-msb = parent.msb
+    let p-lsb = parent.lsb
+    let min-idx = calc.min(p-msb, p-lsb)
+    let max-idx = calc.max(p-msb, p-lsb)
+
+    if m-bit != none {
+      let idx = int(m-bit.captures.at(1))
+      if idx < min-idx or idx > max-idx {
+        return (
+          signal: none,
+          warning: "Bit index " + str(idx) + " out of bounds for signal '" + parent.name + "' [" + str(p-msb) + ":" + str(p-lsb) + "]"
+        )
+      }
+
+      let sliced-changes = ()
+      for chg in parent.changes {
+        let b-res = get-bit-at-index(chg.val, p-msb, p-lsb, idx)
+        let bit-char = b-res.val
+        if sliced-changes.len() == 0 or sliced-changes.last().val != bit-char {
+          sliced-changes.push((time: chg.time, val: bit-char))
+        }
+      }
+
+      let is-clock = (
+        q-str.starts-with("clk") or q-str.starts-with("clock") or
+        q-str.ends-with("_clk") or q-str.ends-with("_clock") or q-str == "ck"
+      )
+
+      let sliced-sig = (
+        id: parent.id + "[" + str(idx) + "]",
+        name: q-str,
+        base-name: parent.base-name,
+        full-name: if parent.full-name.contains(".") {
+          let parts = parent.full-name.split(".")
+          let _ = parts.pop()
+          parts.join(".") + "." + q-str
+        } else { q-str },
+        scopes: parent.scopes,
+        type: parent.type,
+        size: 1,
+        msb: idx,
+        lsb: idx,
+        is-bus: false,
+        is-clock: is-clock,
+        is-port: parent.is-port,
+        changes: sliced-changes,
+      )
+
+      return (signal: sliced-sig, warning: none)
+    } else {
+      let hi = int(m-range.captures.at(1))
+      let lo = int(m-range.captures.at(2))
+
+      if hi < min-idx or hi > max-idx or lo < min-idx or lo > max-idx {
+        return (
+          signal: none,
+          warning: "Bit slice [" + str(hi) + ":" + str(lo) + "] out of bounds for signal '" + parent.name + "' [" + str(p-msb) + ":" + str(p-lsb) + "]"
+        )
+      }
+
+      let slice-size = calc.abs(hi - lo) + 1
+      let sliced-changes = ()
+
+      for chg in parent.changes {
+        let s-res = get-slice-range(chg.val, p-msb, p-lsb, hi, lo)
+        let slice-val = s-res.val
+        if sliced-changes.len() == 0 or sliced-changes.last().val != slice-val {
+          sliced-changes.push((time: chg.time, val: slice-val))
+        }
+      }
+
+      let sliced-sig = (
+        id: parent.id + "[" + str(hi) + ":" + str(lo) + "]",
+        name: q-str,
+        base-name: parent.base-name,
+        full-name: if parent.full-name.contains(".") {
+          let parts = parent.full-name.split(".")
+          let _ = parts.pop()
+          parts.join(".") + "." + q-str
+        } else { q-str },
+        scopes: parent.scopes,
+        type: parent.type,
+        size: slice-size,
+        msb: hi,
+        lsb: lo,
+        is-bus: (slice-size > 1),
+        is-clock: false,
+        is-port: parent.is-port,
+        changes: sliced-changes,
+      )
+
+      return (signal: sliced-sig, warning: none)
+    }
+  }
+
+  // 3. Match by base name or suffix
+  for (name, sig) in parsed.signals {
+    let s-base-norm = normalize-signal-name(sig.base-name)
+    let s-full-norm = normalize-signal-name(sig.full-name)
+    if sig.base-name == q-str or s-base-norm == q-norm or sig.name == q-str or normalize-signal-name(sig.name) == q-norm {
+      return (signal: sig, warning: none)
+    }
+    if sig.full-name.ends-with("." + q-str) or s-full-norm.ends-with("." + q-norm) {
+      return (signal: sig, warning: none)
+    }
+  }
+
+  let avail = parsed.all-signals.map(s => parse-signal-name(s).base).dedup().join(", ")
+  return (
+    signal: none,
+    warning: "Signal '" + q-str + "' not found (available: " + avail + ")"
+  )
+}
+
+/// Find the signal object from parsed data by exact, slice, or suffix/base match
 #let find-signal(parsed, query) = {
-  if query in parsed.signals {
-    return parsed.signals.at(query)
-  }
-  // Try matching by base name
-  for (name, sig) in parsed.signals {
-    if sig.name == query or sig.base-name == query {
-      return sig
-    }
-  }
-  // Try matching end of full-name (e.g. "clk" in "top.clk")
-  for (name, sig) in parsed.signals {
-    if name.ends-with("." + query) {
-      return sig
-    }
-  }
-  return none
+  return resolve-signal(parsed, query).signal
 }
 
 /// Compute value of a signal at or just before time t
@@ -104,6 +260,8 @@
   title: none,
   evcd-mode: "composite",
   time-unit: auto,
+  strict: false,
+  show-warnings: true,
 ) = {
   // Resolve time range
   let t-min = if time-range != none { time-range.at(0) } else { parsed.time-min }
@@ -129,18 +287,106 @@
     }
   }
 
+  // Pre-process all signal tracks and collect any warnings
+  let prepared-tracks = ()
+  let all-warnings = ()
+
+  for entry in sig-entries {
+    let is-divider = entry.at("type", default: "signal") == "divider"
+    if is-divider {
+      prepared-tracks.push((
+        is-divider: true,
+        entry: entry,
+        display-label: entry.at("label", default: entry.at("name", default: "")),
+        sig-obj: none,
+        warning: none,
+        segments: (),
+        is-bus: false,
+        is-clock: false,
+        custom-format: "hex",
+      ))
+    } else {
+      let sig-query = entry.at("name", default: "")
+      let res = resolve-signal(parsed, sig-query)
+      let sig-obj = res.signal
+      let sig-warn = res.warning
+
+      if sig-warn != none {
+        all-warnings.push(sig-warn)
+      }
+
+      let display-label = entry.at("label", default: if sig-obj != none { sig-obj.name } else { sig-query })
+      let segments = if sig-obj != none {
+        build-segments(sig-obj.changes, t-min, t-max)
+      } else { () }
+
+      let is-bus = if sig-obj != none { entry.at("is-bus", default: sig-obj.is-bus) } else { false }
+      let is-clock = if sig-obj != none { entry.at("is-clock", default: sig-obj.is-clock) } else { false }
+
+      // Validate formatting / encoding for bus segments
+      let custom-format = entry.at("format", default: entry.at("interpreter", default: "hex"))
+      if type(custom-format) == str and (custom-format.starts-with("7seg") or custom-format.starts-with("7segment")) {
+        if entry.at("active", default: none) != none or entry.at("order", default: none) != none {
+          custom-format = (
+            type: "7segment",
+            active: entry.at("active", default: "auto"),
+            order: entry.at("order", default: "g-to-a")
+          )
+        }
+      } else if custom-format == "auto" {
+        if sig-obj != none and (sig-obj.size == 7 or sig-obj.size == 8) {
+          custom-format = "7segment"
+        } else {
+          custom-format = "hex"
+        }
+      }
+
+      if is-bus {
+        for seg in segments {
+          let val-lower = lower(str(seg.val))
+          let is-all-z = val-lower != "" and val-lower.replace("z", "").len() == 0
+          let is-all-x = val-lower != "" and val-lower.replace("x", "").len() == 0
+          if not is-all-z and not is-all-x and not ("x" in val-lower) {
+            let interp-res = interpret-bus-val(seg.val, format: custom-format)
+            if not interp-res.ok {
+              all-warnings.push("Signal '" + display-label + "' at t=" + str(seg.start) + ": " + interp-res.error)
+            }
+          }
+        }
+      }
+
+      prepared-tracks.push((
+        is-divider: false,
+        entry: entry,
+        sig-query: sig-query,
+        display-label: display-label,
+        sig-obj: sig-obj,
+        warning: sig-warn,
+        segments: segments,
+        is-bus: is-bus,
+        is-clock: is-clock,
+        custom-format: custom-format,
+      ))
+    }
+  }
+
+  // Fail on warnings if strict mode is requested
+  if strict and all-warnings.len() > 0 {
+    panic("signel error: " + all-warnings.join("; "))
+  }
+
   // Resolve label width automatically if set to auto
   let resolved-label-width = 75pt
   if label-width != auto and type(label-width) == length {
     resolved-label-width = label-width
   } else {
     let max-len = 1
-    for entry in sig-entries {
-      if entry.at("type", default: "signal") != "divider" {
-        let sig-query = entry.at("name", default: "")
-        let sig-obj = find-signal(parsed, sig-query)
-        let display-label = entry.at("label", default: if sig-obj != none { sig-obj.name } else { sig-query })
-        let l = str(display-label).len()
+    for track in prepared-tracks {
+      if not track.is-divider {
+        let l = str(track.display-label).len()
+        if track.warning != none {
+          l += 3 // space for warning icon
+        }
         if l > max-len {
           max-len = l
         }
@@ -197,18 +443,17 @@
 
   // Layout metrics
   let ruler-height = if show-ruler { if markers.len() > 0 { 32pt } else { 20pt } } else { 0pt }
-  let title-height = if title != none { 24pt } else { 0pt }
+  let title-height = if title != none or (show-warnings and all-warnings.len() > 0) { 24pt } else { 0pt }
   let header-height = title-height + ruler-height
 
   // Compute total height
-  let num-channels = sig-entries.len()
+  let num-channels = prepared-tracks.len()
   let track-y-positions = ()
   let current-y = header-height
 
-  for entry in sig-entries {
-    let is-divider = entry.at("type", default: "signal") == "divider"
-    let h = if is-divider { signal-height * 0.8 } else { signal-height }
-    track-y-positions.push((y: current-y, height: h, is-divider: is-divider))
+  for track in prepared-tracks {
+    let h = if track.is-divider { signal-height * 0.8 } else { signal-height }
+    track-y-positions.push((y: current-y, height: h, is-divider: track.is-divider))
     current-y += h + signal-gap
   }
 
@@ -223,10 +468,12 @@
     radius: 4pt,
     inset: if theme.background != none { 4pt } else { (x: 0pt, y: 2pt) },
   )[
-    // 1. Optional Title
-    #if title != none {
+    // 1. Optional Title & Warning Summary
+    #if title != none or (show-warnings and all-warnings.len() > 0) {
       place(top + left, dx: if theme.background != none { 4pt } else { 0pt }, dy: 2pt)[
-        #text(size: theme.font-size + 2pt, weight: "bold", fill: theme.text-color)[#title]
+        #if title != none [
+          #text(size: theme.font-size + 2pt, weight: "bold", fill: theme.text-color)[#title]
+        ]
         #if show-timescale [
           #h(1em)
           #text(size: theme.time-font-size, fill: theme.ruler-color)[
@@ -236,6 +483,18 @@
               (Timescale: #parsed.timescale.number #parsed.timescale.unit)
             ]
           ]
+        ]
+        #if show-warnings and all-warnings.len() > 0 [
+          #h(1em)
+          #box(
+            fill: rgb("fef2f2"),
+            stroke: 0.5pt + rgb("ef4444"),
+            radius: 2pt,
+            inset: (x: 4pt, y: 1.5pt),
+            text(size: theme.time-font-size, fill: rgb("b91c1c"), weight: "bold")[
+              ⚠️ #all-warnings.len() warning#if all-warnings.len() > 1 [s]
+            ]
+          )
         ]
       ]
     }
@@ -304,8 +563,9 @@
     }
 
     // 4. Render Signal Tracks
-    #for idx in range(sig-entries.len()) {
-      let entry = sig-entries.at(idx)
+    #for idx in range(prepared-tracks.len()) {
+      let track = prepared-tracks.at(idx)
+      let entry = track.entry
       let pos = track-y-positions.at(idx)
       let y-top = pos.y
       let y-h = pos.height
@@ -314,7 +574,7 @@
 
       if pos.is-divider {
         // Divider Header
-        let d-label = entry.at("label", default: entry.at("name", default: ""))
+        let d-label = track.display-label
         place(
           top + left,
           dx: 0pt,
@@ -340,16 +600,16 @@
         )
       } else {
         // Regular Signal
-        let sig-query = entry.at("name")
-        let sig-obj = find-signal(parsed, sig-query)
-
-        // Custom label or signal name
-        let display-label = entry.at("label", default: if sig-obj != none { sig-obj.name } else { sig-query })
+        let sig-query = track.sig-query
+        let sig-obj = track.sig-obj
+        let sig-warn = track.warning
+        let display-label = track.display-label
         let custom-color = entry.at("color", default: auto)
         let custom-fill = entry.at("bus-fill", default: auto)
-        let custom-format = entry.at("format", default: "hex")
+        let custom-format = track.custom-format
 
         // Draw Signal Label on Left
+        let is-warn = (sig-obj == none)
         place(
           top + left,
           dx: 0pt,
@@ -358,15 +618,19 @@
             width: resolved-label-width - 4pt,
             height: y-h,
             align(if label-align == "left" { left + horizon } else { right + horizon })[
-              #text(size: theme.font-size, weight: "medium", fill: theme.text-color)[#display-label]
+              #if is-warn [
+                #text(size: theme.font-size, weight: "bold", fill: rgb("b91c1c"))[⚠️ #display-label]
+              ] else [
+                #text(size: theme.font-size, weight: "medium", fill: theme.text-color)[#display-label]
+              ]
             ]
           )
         )
 
         if sig-obj != none {
-          let is-bus = entry.at("is-bus", default: sig-obj.is-bus)
-          let is-clock = entry.at("is-clock", default: sig-obj.is-clock)
-          let segments = build-segments(sig-obj.changes, t-min, t-max)
+          let is-bus = track.is-bus
+          let is-clock = track.is-clock
+          let segments = track.segments
 
           if is-bus {
             // RENDER BUS (MULTI-BIT)
@@ -438,12 +702,19 @@
                 }
               } else {
                 // Valid Bus Segment: Hexagonal Polygon
+                let interp-res = interpret-bus-val(cur-val, format: custom-format)
+                let formatted = interp-res.text
+                let is-err = not interp-res.ok
+
+                let seg-fill = if is-err { rgb("fee2e2") } else if custom-fill != auto { custom-fill } else { b-fill }
+                let seg-stroke = if is-err { theme.stroke-width + rgb("ef4444") } else if custom-color != auto { theme.stroke-width + custom-color } else { theme.stroke-width + b-stroke }
+
                 let sl = calc.min(slant, seg-w / 3.0)
                 place(
                   top + left,
                   polygon(
-                    fill: b-fill,
-                    stroke: theme.stroke-width + b-stroke,
+                    fill: seg-fill,
+                    stroke: seg-stroke,
                     (x0 + sl, y-top + 1pt),
                     (x1 - sl, y-top + 1pt),
                     (x1, y-mid),
@@ -452,8 +723,17 @@
                     (x0, y-mid),
                   )
                 )
-                // Formatted Label
-                let formatted = format-bus-val(cur-val, format: custom-format)
+
+                let text-color = if is-err {
+                  rgb("b91c1c")
+                } else if custom-color != auto {
+                  custom-color
+                } else {
+                  theme.bus-text-color
+                }
+
+                let display-str = if is-err { "⚠️ " + formatted } else { formatted }
+
                 // Check if segment is wide enough to display text
                 if seg-w > 20pt {
                   place(
@@ -466,9 +746,9 @@
                       align(center + horizon)[
                         #text(
                           size: theme.font-size - 1pt,
-                          weight: "medium",
-                          fill: if custom-color != auto { custom-color } else { theme.bus-text-color }
-                        )[#formatted]
+                          weight: if is-err { "bold" } else { "medium" },
+                          fill: text-color,
+                        )[#display-str]
                       ]
                     )
                   )
@@ -481,7 +761,7 @@
                       width: seg-w,
                       height: y-h,
                       align(center + horizon)[
-                        #text(size: theme.font-size - 2pt, fill: theme.bus-text-color)[..]
+                        #text(size: theme.font-size - 2pt, fill: text-color)[#if is-err [⚠️] else [..]]
                       ]
                     )
                   )
@@ -601,6 +881,27 @@
               prev-level = cur-level
             }
           }
+        } else {
+          // Warning track: signal could not be found or sliced
+          let warn-text = if sig-warn != none { sig-warn } else { "Signal '" + sig-query + "' not found" }
+          place(
+            top + left,
+            dx: resolved-label-width,
+            dy: y-top,
+            block(
+              width: wave-width,
+              height: y-h,
+              fill: rgb("fef2f2"),
+              stroke: 0.8pt + rgb("f87171"),
+              radius: 2pt,
+              inset: (x: 6pt, y: 2pt),
+              align(left + horizon)[
+                #text(size: theme.font-size - 1.5pt, weight: "bold", fill: rgb("b91c1c"))[
+                  ⚠️ #warn-text
+                ]
+              ]
+            )
+          )
         }
       }
     }

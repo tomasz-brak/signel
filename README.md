@@ -15,10 +15,23 @@
   - Extended **EVCD** (`$dumpports`): complete support for the 23 port strength and direction characters (`DUNZduLHXTlh01?FAaBbCcf`), with composite, input-only, output-only, and raw decoding modes.
 - **Rich Vector Waveform Rendering**:
   - Digital square waves for 1-bit clocks and control signals.
-  - Hexagonal beveled envelopes for multi-bit buses with automatic formatting (Hexadecimal, Decimal, Binary, ASCII, or custom callback).
+  - Hexagonal beveled envelopes for multi-bit buses with automatic formatting.
   - High-impedance ($Z$) centered dashed lines and unknown ($X$) shaded warning regions.
   - Section dividers with headers for grouping complex SoC/bus traces.
   - Precision vertical timing markers and shaded cursor intervals ($\Delta t$).
+- **Bit Slicing & Flexible Signal Matching**:
+  - Slice single bits (`sw[0]`, `count[1]`) or sub-bus ranges (`data[7:4]`, `count[3:1]`) on the fly.
+  - Sliced single bits are automatically rendered as digital 1-bit square waveforms.
+  - Seamlessly handles whitespace differences (e.g. `sw[1:0]` matches `sw [1:0]`).
+- **Data Interpreters & Auto-Decoding**:
+  - **7-Segment Display Decoding**: Decodes active-low (0=ON) or active-high (1=ON) 7-segment segment patterns into hex digits (`0`--`F`, `-`, blank), with 8-bit DP support.
+  - **Signed 2's Complement**: Decodes signed integers (`format: "signed"`).
+  - **One-Hot States**: Decodes active bit index and validates one-hot invariants (`format: "one-hot"`).
+  - **Gray Code & Radices**: Gray code conversion, octal, binary, decimal, hex, ASCII, and enum dictionaries.
+- **Intelligent Warning & Error Diagnostics**:
+  - Clear in-place visual warning banners when a signal is not found (listing available signals from the VCD) or when a bit index is out of bounds.
+  - Visual error highlighting (`⚠️ ?` or `⚠️ ERR`) on waveform segments that were encoded wrong.
+  - Optional `strict: true` mode to panic during compilation for CI test verification.
 - **Custom Styling & Theming**:
   - 7 built-in themes: `themes.default`, `themes.dark`, `themes.academic`, `themes.nord`, `themes.dracula`, `themes.emerald`, and `themes.amber`.
   - Customizer helper `vcd-theme(...)` for fine-grained color, dimension, and font control.
@@ -54,13 +67,13 @@ If you or your team need to verify or update your Typst installation:
 Copy or symlink `signel` to your local Typst package directory:
 
 ```bash
-mkdir -p ~/.local/share/typst/packages/local/signel/0.1.0
-cp -r typst.toml lib.typ src ~/.local/share/typst/packages/local/signel/0.1.0/
+mkdir -p ~/.local/share/typst/packages/local/signel/0.1.1
+cp -r typst.toml lib.typ src ~/.local/share/typst/packages/local/signel/0.1.1/
 ```
 
 Then in any Typst document:
 ```typst
-#import "@local/signel:0.1.0": render-vcd, themes
+#import "@local/signel:0.1.1": render-vcd, themes
 ```
 
 ### Option 2: Direct Relative Import
@@ -75,7 +88,7 @@ Include `signel` directly in your project:
 ## Quick Start Example
 
 ```typst
-#import "@local/signel:0.1.0": render-vcd, themes
+#import "@local/signel:0.1.1": render-vcd, themes
 
 #set page(width: auto, height: auto, margin: 1cm)
 

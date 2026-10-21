@@ -76,6 +76,8 @@ Renders a waveform from a VCD/EVCD content string. In Typst, packages are sandbo
 - **`title`** (`none` | `content` | `str`, default: `none`): Optional title text.
 - **`evcd-mode`** (`"composite"` | `"input"` | `"output"` | `"raw"`, default: `"composite"`): Decoding mode for EVCD ports.
 - **`time-unit`** (`auto` | `str`, default: `auto`): Overrides the displayed time unit on the time ruler (e.g. `"fs"`, `"ps"`, `"ns"`, `"us"`, `"ms"`, `"s"`). Internally preserves waveform time ticks while converting the displayed numbers.
+- **`strict`** (`bool`, default: `false`): When `true`, causes compilation to panic if any signal is not found, sliced out of bounds, or encoded wrong. When `false` (default), renders clear visual warning banners in the waveform without halting compilation.
+- **`show-warnings`** (`bool`, default: `true`): Whether to display warning badges and alert banners when signals are missing or values are encoded wrong.
 
 ---
 
@@ -90,34 +92,92 @@ Renders an already-parsed VCD data dictionary (produced by `parse-vcd`).
 
 ---
 
-## Signal Configuration Dictionary
+## Signal Configuration Dictionary & Slicing
 
-Inside the `signals` array, you can pass strings or dictionaries with per-signal overrides:
+Inside the `signals` array, you can pass strings or dictionaries with per-signal overrides.
+
+### 1. Signal Slicing
+
+You can slice any multi-bit signal from the VCD by specifying bit indices or ranges directly in the signal query:
+- **Single Bit**: `"count[0]"` or `"sw[1]"` — automatically rendered as a digital 1-bit waveform with logic transitions (`0`, `1`, `x`, `z`).
+- **Sub-Bus Range**: `"count[3:1]"` or `"data[7:4]"` — automatically rendered as a multi-bit bus with specified width.
+- **Whitespace Flexibility**: Matches whether the VCD declared `sw [1:0]` with a space or `sw[1:0]` without.
+
+### 2. Configuration Options & Interpreters
 
 ```typst
 signals: (
-  // String shorthand:
+  // 1. String shorthands (supports direct slicing):
   "clk",
+  "count[0]",     // Sliced 1-bit signal
+  "count[3:1]",   // Sliced sub-bus
 
-  // Custom configuration dictionary:
+  // 2. 7-Segment Display Auto-Decoding (Active-Low & Active-High):
   (
-    name: "data [7:0]",       // Name in VCD (exact or base name)
-    label: "DATA BUS",        // Custom display label
-    color: rgb("1d4ed8"),     // Signal stroke color
-    bus-stroke: rgb("1d4ed8"),// Custom bus border
-    bus-fill: rgb("e0f2fe"),  // Custom bus interior fill
-    format: "hex",            // "hex" | "bin" | "dec" | "ascii" | "raw" | function
-    is-bus: true,             // Force bus interpretation
-    is-clock: false,          // Force clock styling
+    name: "hex0 [6:0]",
+    label: "HEX0",
+    format: "7segment-low",    // Decodes active-low 7-segment (0=ON, e.g. 0x40 -> 0)
+    // or: format: "7segment-high" (1=ON, common cathode)
+    // or: format: "7segment" (auto-detects active-low or active-high)
+    // or: format: (type: "7segment", active: "low", order: "g-to-a")
   ),
 
-  // Section divider / header:
+  // 3. Signed Two's Complement Integer Interpreter:
+  (
+    name: "alu_out [7:0]",
+    label: "ALU Output",
+    format: "signed",          // Displays signed decimal (-128 to +127)
+  ),
+
+  // 4. One-Hot State Interpreter:
+  (
+    name: "state [3:0]",
+    label: "FSM One-Hot",
+    format: "one-hot",         // Displays active bit index (0..3); warns if invalid
+  ),
+
+  // 5. Gray Code Interpreter:
+  (
+    name: "gray_cnt [3:0]",
+    format: "gray",            // Converts Gray code to decimal value
+  ),
+
+  // 6. Enum / State Name Mapping:
+  (
+    name: "fsm [1:0]",
+    format: (0: "IDLE", 1: "FETCH", 2: "DECODE", 3: "EXEC"),
+  ),
+
+  // 7. Standard number formats:
+  // "hex" | "hex-raw" | "dec" | "bin" | "octal" | "ascii" | "bool" | "raw" | function
+  (
+    name: "data [7:0]",
+    label: "DATA BUS",
+    color: rgb("1d4ed8"),
+    bus-stroke: rgb("1d4ed8"),
+    bus-fill: rgb("e0f2fe"),
+    format: "hex",
+    is-bus: true,
+  ),
+
+  // 8. Section divider / header:
   (
     type: "divider",
     label: "Memory Control Signals",
   ),
 )
 ```
+
+---
+
+## Warning System
+
+*signel* includes an integrated warning and diagnostics system:
+- **Missing Signal**: If a signal query does not match any signal in the VCD, a prominent warning track replaces the signal row, listing all available signal names from the simulation.
+- **Index Out of Bounds**: If a bit slice index exceeds the signal's declared `[msb:lsb]` range (e.g. `count[8]` on a 4-bit counter), a warning banner displays the valid range.
+- **Invalid Encoding**: If an interpreter receives a pattern that does not match any valid digit (such as an illegal 7-segment display code or a one-hot vector with multiple/zero active bits), the affected segment is highlighted in warning red (`⚠️ ?` or `⚠️ ERR`), and the error is logged.
+- **Strict Mode (`strict: true`)**: When enabled, any missing signal, out-of-bounds slice, or encoding error triggers a Typst compilation `panic`, making it ideal for CI and verification tests.
+
 
 ---
 
@@ -198,3 +258,40 @@ Helper function to customize or create themes:
   font-size: 9pt,
 )
 ```
+
+---
+
+## Utility & Interpreter Functions
+
+### `decode-7segment(bin-val, active: "auto", order: "g-to-a")`
+
+Decodes a 7-segment display vector (7-bit or 8-bit with DP) into a hexadecimal digit character (`0`--`F`, `-`, or blank).
+- **`active`**: `"low"` (common anode, 0=ON), `"high"` (common cathode, 1=ON), or `"auto"` (auto-detects).
+- **`order`**: `"g-to-a"` (bit 6 = g, bit 0 = a, default) or `"a-to-g"` (bit 6 = a, bit 0 = g).
+- **Returns**: `(val: str, ok: bool, error: none | str)`. If invalid, `ok` is `false`.
+
+### `bin-to-signed(bin-str)`
+
+Decodes a two's complement binary string to a signed decimal string (e.g. `"1111"` -> `"-1"`, `"0111"` -> `"7"`).
+- **Returns**: `(val: str, ok: bool, error: none | str)`.
+
+### `decode-one-hot(bin-str)`
+
+Decodes a one-hot binary string into the integer index of the active bit (e.g. `"0001"` -> `"0"`, `"0010"` -> `"1"`).
+- **Returns**: `(val: str, ok: bool, error: none | str)`. If multiple bits or zero bits are active, returns `ok: false`.
+
+### `gray-to-bin(bin-str)`
+
+Converts a Gray code binary string to standard binary and integer decimal value.
+- **Returns**: `(val: str, bin: str, ok: bool, error: none | str)`.
+
+### `bin-to-oct(bin-str, prefix: "0o")`
+
+Converts a binary string to octal format with optional prefix.
+
+### `resolve-signal(parsed, query)`
+
+Finds a signal in parsed data or dynamically slices a single bit or range.
+- Matches exact names (`"clk"`), base names (`"sw"` for `"sw [1:0]"`), normalized names (`"sw[1:0]"` for `"sw [1:0]"`), scoped names (`"top.sw[0]"`), and slices (`"count[0]"`, `"data[7:4]"`).
+- **Returns**: `(signal: dictionary | none, warning: str | none)`.
+
